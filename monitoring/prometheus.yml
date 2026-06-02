@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  # Kafka broker / consumer lag metrics — this is the kafka_consumer_lag
+  # series that the HPA / KEDA scaler reads to make scale decisions.
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+
+  # MQ service: Spring Boot Actuator + Micrometer Prometheus registry.
+  - job_name: mq-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["mq-service:8081"]

@@ -1,0 +1,78 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: mq-service
+
+  # Postgres: source of truth for message state
+  datasource:
+    url: jdbc:postgresql://${PG_HOST:postgres}:${PG_PORT:5432}/${PG_DB:mq}
+    username: ${PG_USER:mq}
+    password: ${PG_PASSWORD:mq}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 5
+
+  jpa:
+    hibernate:
+      ddl-auto: update             # demo only
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    open-in-view: false
+
+  # Redis: cache-aside in front of Postgres
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 2
+
+  # Kafka cluster — actual broker addresses come from env in k8s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:kafka:9092}
+    consumer:
+      group-id: order-processors
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    producer:
+      acks: all
+
+# How many concurrent partitions each consumer container handles.
+# In K8s set this to the number of partitions per topic divided by replica count.
+kafka:
+  consumer:
+    concurrency: 3
+
+# Redis cache TTL — short enough that any stale data ages out, long enough to be useful.
+cache:
+  ttl-seconds: 600
+
+# Actuator exposes /actuator/prometheus for the HPA / KEDA stack.
+# Also exposes /actuator/health for K8s readiness probes.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.example.mq: INFO
+    org.apache.kafka: WARN
+    org.springframework.kafka: INFO

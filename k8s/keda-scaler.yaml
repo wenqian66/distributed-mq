@@ -1,0 +1,60 @@
+# KEDA ScaledObject — autoscale on Kafka consumer lag, not CPU.
+#
+# Why KEDA instead of vanilla HPA?
+#   The Kubernetes HPA only natively understands CPU and memory. To scale on a
+#   custom metric like consumer lag we'd otherwise need to:
+#     (a) install the prometheus-adapter,
+#     (b) register a custom external metric API,
+#     (c) hand-write the metric query into a HorizontalPodAutoscaler manifest.
+#   KEDA collapses all of that into one CRD: a ScaledObject pointing at a
+#   trigger. KEDA itself manages the underlying HPA for you.
+#
+# Why scale on lag?
+#   Consumers spend most of their time blocked on poll() — CPU stays under 50%
+#   even when lag is huge. CPU-based HPA would never trigger and lag would just
+#   pile up. The whole point of "autoscale a Kafka consumer" is to add pods
+#   when lag rises, not when CPU does.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: mq-service-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mq-service
+  pollingInterval: 15        # seconds between metric checks
+  cooldownPeriod: 120        # seconds with no triggers before scaling back to minReplicaCount
+  minReplicaCount: 2
+  maxReplicaCount: 20
+
+  triggers:
+    # Native Kafka trigger — KEDA talks to the broker directly, no Prometheus
+    # required. Picks the trigger that fires fastest if you list multiple.
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka.kafka.svc.cluster.local:9092
+        consumerGroup: order-processors
+        topic: orders.high
+        # Add one pod for every 100 messages of lag on this topic.
+        lagThreshold: "100"
+        offsetResetPolicy: earliest
+
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka.kafka.svc.cluster.local:9092
+        consumerGroup: order-processors
+        topic: orders.normal
+        lagThreshold: "500"            # less aggressive than HIGH — we accept some normal-priority queueing
+        offsetResetPolicy: earliest
+
+    # Alternative: scale on a Prometheus query. Useful when you want to combine
+    # several metrics (lag + p99 latency + error rate) into one decision. Left
+    # commented out — pick this OR the kafka trigger above, not both.
+    # - type: prometheus
+    #   metadata:
+    #     serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+    #     metricName: kafka_consumergroup_lag
+    #     threshold: "100"
+    #     query: sum(kafka_consumergroup_lag{consumergroup="order-processors", topic=~"orders\\..*"})

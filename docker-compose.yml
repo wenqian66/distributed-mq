@@ -1,0 +1,89 @@
+version: "3.9"
+
+services:
+  # ---- Kafka (KRaft mode — no Zookeeper) ----
+  kafka:
+    image: bitnami/kafka:3.6.1
+    environment:
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports: ["9092:9092"]
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+  # JMX exporter sidecar — exposes kafka_consumer_lag etc to Prometheus.
+  # Real production: run jmx_exporter in-process inside the broker JVM.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    command: ["--kafka.server=kafka:9092"]
+    ports: ["9308:9308"]
+    depends_on: [kafka]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mq
+      POSTGRES_USER: mq
+      POSTGRES_PASSWORD: mq
+    ports: ["5432:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  # ---- The MQ service itself ----
+  mq-service:
+    build:
+      context: ./mq-service
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DB: mq
+      PG_USER: mq
+      PG_PASSWORD: mq
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports: ["8081:8081"]
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+    deploy:
+      replicas: 2          # show off the consumer group rebalance
+
+  # ---- Observability ----
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [kafka-exporter, mq-service]
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["3000:3000"]
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+      - ./monitoring/grafana-dashboard-provider.yml:/etc/grafana/provisioning/dashboards/default.yml:ro
+      - ./monitoring/grafana-dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+
+volumes:
+  kafka_data:
+  pg_data:
+  grafana_data:

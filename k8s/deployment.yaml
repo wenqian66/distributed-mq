@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mq-service-config
+  namespace: default
+data:
+  KAFKA_BOOTSTRAP: "kafka.kafka.svc.cluster.local:9092"
+  PG_HOST: "postgres.default.svc.cluster.local"
+  PG_PORT: "5432"
+  PG_DB: "mq"
+  PG_USER: "mq"
+  REDIS_HOST: "redis.default.svc.cluster.local"
+  REDIS_PORT: "6379"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mq-service-secrets
+  namespace: default
+type: Opaque
+stringData:
+  PG_PASSWORD: "mq"        # in production read from a secret manager (Vault, AWS Secrets Manager, etc.)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mq-service
+  namespace: default
+  labels:
+    app: mq-service
+spec:
+  # KEDA / HPA will override this number — start at 2 for cold-start latency.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mq-service
+  template:
+    metadata:
+      labels:
+        app: mq-service
+      annotations:
+        # Tells the Prometheus Operator to scrape this pod's actuator endpoint.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      containers:
+        - name: mq-service
+          image: ghcr.io/example/mq-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: mq-service-config
+            - secretRef:
+                name: mq-service-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          # K8s readiness/liveness use Spring Boot Actuator's specific probe
+          # endpoints — these are different from the catch-all /actuator/health
+          # because they only flip true once the relevant lifecycle phase passes.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 5
